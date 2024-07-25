@@ -89,19 +89,20 @@ class Regulator(QtCore.QObject):
     def __init__(self, ser:serial.Serial):
         try:
             super().__init__()
-            self.serial = ser
-            ser.baudrate = 115200
-            self.owenDevice = Owen.OwenDevice(self.serial, 0)
+            self.serial = serial.Serial(ser, timeout=3)
+            self.serial.baudrate = 115200
             self.isHeating = False
+            self.owenDevice = Owen.OwenDevice(self.serial, 0)
         except Exception as e:
             print(str(e))
 
     def set_temp(self, temp, speed):
-        try:
-            self.owenDevice.writeFloat24("SP", temp)#self.sp_heater.value())
-            self.owenDevice.writeFloat24("vSP", speed)#float(self.cmb_speed.currentText()))
-        except serial.serialutil.SerialException:
-            self.dc_sgn.emit(2)
+        if isinstance(self.owenDevice, Owen.OwenDevice):
+            try:
+                self.owenDevice.writeFloat24("SP", temp)#self.sp_heater.value())
+                self.owenDevice.writeFloat24("vSP", speed)#float(self.cmb_speed.currentText()))
+            except serial.serialutil.SerialException:
+                self.dc_sgn.emit(2)
 
     def get(self) -> float:
         try:
@@ -111,27 +112,32 @@ class Regulator(QtCore.QObject):
         except serial.serialutil.SerialException:
             self.dc_sgn.emit(2)
             print('regul err')
-        except:
+        except Owen.OwenProtocolError:
+            print("Включите терморегулятор")
+        except Exception as e:
             self.dc_sgn.emit(2)
+            print(e)
         try:
             self.serial.close()
         except:
             pass
         print('heater thread exit')
+        self.owenDevice = False
         self.thread().exit()
 
     def toggle_heater(self):
-        try:
-            if self.isHeating:
-                self.owenDevice.writeChar('r-S', False)
-                self.isHeating = False
-            else:
-                self.owenDevice.writeChar('r-S', True)
-                self.isHeating = True
-            print(self.isHeating)
-            self.rd_sgn.emit({"type": "heating", "val": self.isHeating})
-        except serial.serialutil.SerialException:
-            self.dc_sgn.emit(2)
+        if isinstance(self.owenDevice, Owen.OwenDevice):
+            try:
+                if self.isHeating:
+                    self.owenDevice.writeChar('r-S', False)
+                    self.isHeating = False
+                else:
+                    self.owenDevice.writeChar('r-S', True)
+                    self.isHeating = True
+                print(self.isHeating)
+                self.rd_sgn.emit({"type": "heating", "val": self.isHeating})
+            except serial.serialutil.SerialException:
+                self.dc_sgn.emit(2)
             
         
 
@@ -209,6 +215,9 @@ class Ui(QtWidgets.QMainWindow):
         
         self.console.append(str(data))
 
+    def print(self, *args):
+        self.console.append(' '.join(map(str, args)))
+
     def erase_data(self):
         self.time = dt.now().timestamp()
         self.temp_data = [[] for i in range(11)]
@@ -238,14 +247,10 @@ class Ui(QtWidgets.QMainWindow):
                 self.is_controller_connected = False
                 del self.controller
             else:
-                print(1)
                 items = [self.cmb_controller.itemText(i) for i in range(self.cmb_controller.count())]
-                print(2)
                 #start:work with controller
                 self.controllerThread = DThread("controller")
-                print(3)
                 self.controller = Controller(serial.Serial(items[self.cmb_controller.currentIndex()], timeout=1))
-                print(3)
                 self.controller.moveToThread(self.controllerThread)
                 
                 self.controllerThread.started.connect(self.controller.polling)
@@ -273,7 +278,7 @@ class Ui(QtWidgets.QMainWindow):
                 items = [self.cmb_controller.itemText(i) for i in range(self.cmb_controller.count())]
                 #start:work with regulator
                 self.regulatorThread = DThread("regulator")
-                self.regulator = Regulator(serial.Serial(items[self.cmb_regulator.currentIndex()]))
+                self.regulator = Regulator(items[self.cmb_regulator.currentIndex()])
                 self.regulator.moveToThread(self.regulatorThread)
                 self.regulatorThread.started.connect(self.regulator.get)
                 self.sp_heater.valueChanged.connect(self.update_owen)
@@ -284,9 +289,11 @@ class Ui(QtWidgets.QMainWindow):
 
                 self.regulator.rd_sgn.connect(self.get_owen)
                 self.regulator.dc_sgn.connect(self.device_disconnect)
+                
                 self.regulatorThread.start()
                 self.btn_ioregul.setStyleSheet("background-color: rgb(170, 255, 155);")
                 self.is_regulator_connected = True
+                
                 #end:work with regulator
         except Exception as e:
             self.console.append(", ".join(getError()))
@@ -361,4 +368,5 @@ class Ui(QtWidgets.QMainWindow):
 
 app = QtWidgets.QApplication(sys.argv)
 window = Ui()
+print = window.print
 app.exec_()
